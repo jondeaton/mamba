@@ -1,5 +1,8 @@
 # Copyright (c) 2023, Tri Dao, Albert Gu.
 
+# Adaptation from  Vision Mamba https://github.com/hustvl/Vim
+
+
 import math
 from typing import Optional
 
@@ -10,7 +13,7 @@ from torch import Tensor
 
 from einops import rearrange, repeat
 
-from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inner_fn
+from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inner_fn, mamba_inner_fn_no_out_proj
 
 try:
     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -47,6 +50,7 @@ class Mamba(nn.Module):
         layer_idx=None,
         device=None,
         dtype=None,
+        bidirectional: bool = False,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -110,6 +114,36 @@ class Mamba(nn.Module):
         self.A_log = nn.Parameter(A_log)
         self.A_log._no_weight_decay = True
 
+        self.bidirectional = bidirectional
+        if self.bidirectional:
+            A_b = repeat(
+                torch.arange(1, self.d_state + 1, dtype=torch.float32, device=device),
+                "n -> d n",
+                d=self.d_inner,
+            ).contiguous()
+            A_b_log = torch.log(A_b)  # Keep A_b_log in fp32
+            self.A_b_log = nn.Parameter(A_b_log)
+            self.A_b_log._no_weight_decay = True 
+
+            self.conv1d_b = nn.Conv1d(
+                in_channels=self.d_inner,
+                out_channels=self.d_inner,
+                bias=conv_bias,
+                kernel_size=d_conv,
+                groups=self.d_inner,
+                padding=d_conv - 1,
+                **factory_kwargs,
+            )
+
+            self.x_proj_b = nn.Linear(
+                self.d_inner, self.dt_rank + self.d_state * 2, bias=False, **factory_kwargs
+            )
+            self.dt_proj_b = nn.Linear(self.dt_rank, self.d_inner, bias=True, **factory_kwargs)
+
+            self.D_b = nn.Parameter(torch.ones(self.d_inner, device=device))  # Keep in fp32
+            self.D_b._no_weight_decay = True
+
+
         # D "skip" parameter
         self.D = nn.Parameter(torch.ones(self.d_inner, device=device))  # Keep in fp32
         self.D._no_weight_decay = True
@@ -141,23 +175,62 @@ class Mamba(nn.Module):
             xz = xz + rearrange(self.in_proj.bias.to(dtype=xz.dtype), "d -> d 1")
 
         A = -torch.exp(self.A_log.float())  # (d_inner, d_state)
+
         # In the backward pass we write dx and dz next to each other to avoid torch.cat
         if self.use_fast_path and inference_params is None:  # Doesn't support outputting the states
-            out = mamba_inner_fn(
-                xz,
-                self.conv1d.weight,
-                self.conv1d.bias,
-                self.x_proj.weight,
-                self.dt_proj.weight,
-                self.out_proj.weight,
-                self.out_proj.bias,
-                A,
-                None,  # input-dependent B
-                None,  # input-dependent C
-                self.D.float(),
-                delta_bias=self.dt_proj.bias.float(),
-                delta_softplus=True,
-            )
+
+            if self.bidirectional:
+                A_b = -torch.exp(self.A_b_log.float())
+                out = mamba_inner_fn_no_out_proj(
+                    xz,
+                    self.conv1d.weight,
+                    self.conv1d.bias,
+                    self.x_proj.weight,
+                    self.dt_proj.weight,
+                    A,
+                    None,  # input-dependent B
+                    None,  # input-dependent C
+                    self.D.float(),
+                    delta_bias=self.dt_proj.bias.float(),
+                    delta_softplus=True,
+                )
+                out_b = mamba_inner_fn_no_out_proj(
+                    xz.flip([-1]),
+                    self.conv1d_b.weight,
+                    self.conv1d_b.bias,
+                    self.x_proj_b.weight,
+                    self.dt_proj_b.weight,
+                    A_b,
+                    None,
+                    None,
+                    self.D_b.float(),
+                    delta_bias=self.dt_proj_b.bias.float(),
+                    delta_softplus=True,
+                )
+                # F.linear(rearrange(out_z, "b d l -> b l d"), out_proj_weight, out_proj_bias)
+                # if not self.if_devide_out:
+                out = F.linear(rearrange(out + out_b.flip([-1]), "b d l -> b l d"), self.out_proj.weight, self.out_proj.bias)
+                # else:
+                #     out = F.linear(rearrange(out + out_b.flip([-1]), "b d l -> b l d") / 2, self.out_proj.weight, self.out_proj.bias)
+
+            else:
+                out = mamba_inner_fn(
+                    xz,
+                    self.conv1d.weight,
+                    self.conv1d.bias,
+                    self.x_proj.weight,
+                    self.dt_proj.weight,
+                    self.out_proj.weight,
+                    self.out_proj.bias,
+                    A,
+                    None, # no backwards thing.
+                    None,  # input-dependent B
+                    None,  # input-dependent C
+                    self.D.float(),
+                    delta_bias=self.dt_proj.bias.float(),
+                    delta_softplus=True,
+                )
+
         else:
             x, z = xz.chunk(2, dim=1)
             # Compute short convolution
