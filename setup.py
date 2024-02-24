@@ -24,6 +24,25 @@ from torch.utils.cpp_extension import (
     CUDA_HOME,
 )
 
+# https://github.com/HawkAaron/warp-transducer/issues/15#issuecomment-467668750
+os.environ["CUDA_TOOLKIT_ROOT_DIR"] = CUDA_HOME
+ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
+os.environ["LD_LIBRARY_PATH"] = f"{CUDA_HOME}/extras/CUPTI/lib64:{ld_library_path}"
+os.environ["LD_LIBRARY_PATH"] = f"{CUDA_HOME}/lib64:{os.environ['LD_LIBRARY_PATH']}"
+library_path = os.environ.get("LIBRARY_PATH", "")
+os.environ["LIBRARY_PATH"] = f"{CUDA_HOME}/lib64:{library_path}"
+cflags = os.environ.get("CFLAGS", "")
+os.environ["CFLAGS"] = f"-I{CUDA_HOME}/include {cflags}"
+
+# TODO: not sure if this is required...
+# export CUDA_HOST_COMPILER="/usr/bin/gcc-12"
+os.environ["CUDA_HOST_COMPILER"] = "/usr/bin/gcc-12"
+
+# TODO: not sure if this is required
+# https://bbs.archlinux.org/viewtopic.php?pid=2129239#p2129239
+os.environ["NVCC_PREPEND_FLAGS"] = "-ccbin /usr/bin/g++-12"
+# export NVCC_PREPEND_FLAGS='-ccbin /usr/bin/g++-12'
+
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
@@ -34,7 +53,9 @@ this_dir = os.path.dirname(os.path.abspath(__file__))
 
 PACKAGE_NAME = "mamba_ssm"
 
-BASE_WHEEL_URL = "https://github.com/state-spaces/mamba/releases/download/{tag_name}/{wheel_name}"
+BASE_WHEEL_URL = (
+    "https://github.com/state-spaces/mamba/releases/download/{tag_name}/{wheel_name}"
+)
 
 # FORCE_BUILD: Force a fresh build locally, instead of attempting to find prebuilt wheels
 # SKIP_CUDA_BUILD: Intended to allow CI to use a simple `python setup.py sdist` run to copy over raw files, without any cuda compilation
@@ -179,7 +200,9 @@ def get_wheel_url():
     torch_version_raw = parse(torch.__version__)
     # For CUDA 11, we only compile for CUDA 11.8, and for CUDA 12 we only compile for CUDA 12.2
     # to save CI time. Minor versions should be compatible.
-    torch_cuda_version = parse("11.8") if torch_cuda_version.major == 11 else parse("12.2")
+    torch_cuda_version = (
+        parse("11.8") if torch_cuda_version.major == 11 else parse("12.2")
+    )
     python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
     platform_name = get_platform()
     mamba_ssm_version = get_package_version()
@@ -243,6 +266,7 @@ setup(
             "dist",
             "docs",
             "benchmarks",
+            "mamba_ssm", # add this so that we don't install any of the python but just load them directly with __init__.py
             "mamba_ssm.egg-info",
         )
     ),
@@ -258,11 +282,13 @@ setup(
         "Operating System :: Unix",
     ],
     ext_modules=ext_modules,
-    cmdclass={"bdist_wheel": CachedWheelsCommand, "build_ext": BuildExtension}
-    if ext_modules
-    else {
-        "bdist_wheel": CachedWheelsCommand,
-    },
+    cmdclass=(
+        {"bdist_wheel": CachedWheelsCommand, "build_ext": BuildExtension}
+        if ext_modules
+        else {
+            "bdist_wheel": CachedWheelsCommand,
+        }
+    ),
     python_requires=">=3.7",
     install_requires=[
         "torch",
