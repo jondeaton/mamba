@@ -36,11 +36,11 @@ os.environ["CFLAGS"] = f"-I{CUDA_HOME}/include {cflags}"
 
 # TODO: not sure if this is required...
 # export CUDA_HOST_COMPILER="/usr/bin/gcc-12"
-os.environ["CUDA_HOST_COMPILER"] = "/usr/bin/gcc-12"
+# os.environ["CUDA_HOST_COMPILER"] = "/usr/bin/gcc-12"
 
 # TODO: not sure if this is required
 # https://bbs.archlinux.org/viewtopic.php?pid=2129239#p2129239
-os.environ["NVCC_PREPEND_FLAGS"] = "-ccbin /usr/bin/g++-12"
+# os.environ["NVCC_PREPEND_FLAGS"] = "-ccbin /usr/bin/g++-12"
 # export NVCC_PREPEND_FLAGS='-ccbin /usr/bin/g++-12'
 
 
